@@ -1,13 +1,22 @@
 import { io, Socket } from "socket.io-client";
 
-const SOCKET_URL =
-  process.env.NEXT_PUBLIC_API_URL ||
-  "http://localhost:3000";
-
 let socket: Socket | null = null;
 
+const SOCKET_URL =
+  process.env.NEXT_PUBLIC_SOCKET_URL ||
+  "http://localhost:3000";
+
 export function connectSocket(): Socket {
-  if (socket?.connected) {
+  /*
+   * IMPORTANT:
+   *
+   * Return the existing socket even if it is
+   * still connecting.
+   *
+   * This prevents React Strict Mode from
+   * creating multiple Socket.IO connections.
+   */
+  if (socket) {
     return socket;
   }
 
@@ -17,33 +26,50 @@ export function connectSocket(): Socket {
       : null;
 
   if (!token) {
-    throw new Error("Authentication token not found");
+    console.error(
+      "Socket.IO: accessToken not found in localStorage"
+    );
+
+    throw new Error(
+      "Socket authentication token not found"
+    );
   }
+
+  console.log(
+    "Connecting Socket.IO to:",
+    SOCKET_URL
+  );
 
   socket = io(SOCKET_URL, {
     auth: {
       token,
     },
-    transports: ["websocket"],
+
+    transports: [
+      "websocket",
+      "polling",
+    ],
+
+    autoConnect: true,
   });
 
   socket.on("connect", () => {
     console.log(
-      "Socket.IO connected:",
+      "Frontend Socket.IO connected:",
       socket?.id
     );
   });
 
   socket.on("connect_error", (error) => {
     console.error(
-      "Socket.IO connection error:",
+      "Frontend Socket.IO connection error:",
       error.message
     );
   });
 
   socket.on("disconnect", (reason) => {
     console.log(
-      "Socket.IO disconnected:",
+      "Frontend Socket.IO disconnected:",
       reason
     );
   });
@@ -51,13 +77,13 @@ export function connectSocket(): Socket {
   return socket;
 }
 
-export function disconnectSocket() {
+export function getSocket(): Socket | null {
+  return socket;
+}
+
+export function disconnectSocket(): void {
   if (socket) {
     socket.disconnect();
     socket = null;
   }
-}
-
-export function getSocket(): Socket | null {
-  return socket;
 }

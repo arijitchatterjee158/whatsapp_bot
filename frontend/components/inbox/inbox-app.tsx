@@ -1,6 +1,10 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import {
+  useEffect,
+  useRef,
+  useState,
+} from "react";
 
 import {
   ArrowLeft,
@@ -36,7 +40,6 @@ import {
 
 import {
   connectSocket,
-  disconnectSocket,
 } from "@/lib/socket";
 
 /* =========================================================
@@ -385,7 +388,6 @@ function ConversationRow({
           )}
 
         </span>
-
       </span>
     </button>
   );
@@ -448,6 +450,7 @@ function ConversationList({
       </div>
 
       <div className="px-4 pb-4">
+
         <div className="flex h-10 items-center gap-2 rounded-lg bg-muted/70 px-3 text-muted-foreground">
 
           <Search className="size-4" />
@@ -549,6 +552,7 @@ function MessageBubble({
           : "justify-start"
       }`}
     >
+
       <div
         className={`max-w-[78%] rounded-2xl px-4 py-3 text-sm leading-6 shadow-sm ${
           outgoing
@@ -580,7 +584,6 @@ function MessageBubble({
             ))}
 
         </div>
-
       </div>
     </div>
   );
@@ -762,7 +765,6 @@ function ChatWindow({
           </Button>
 
         </div>
-
       </header>
 
       <div className="flex-1 overflow-y-auto px-4 py-6 sm:px-8">
@@ -819,6 +821,16 @@ function InboxShell() {
   const [selectedId, setSelectedId] =
     useState("");
 
+  /*
+   * IMPORTANT:
+   *
+   * Keep the latest selected conversation
+   * without making the Socket.IO effect
+   * depend on selectedId.
+   */
+  const selectedIdRef =
+    useRef(selectedId);
+
   const [showList, setShowList] =
     useState(true);
 
@@ -841,6 +853,14 @@ function InboxShell() {
 
   const [sendError, setSendError] =
     useState("");
+
+  /*
+   * Keep ref synchronized with selected chat.
+   */
+  useEffect(() => {
+    selectedIdRef.current =
+      selectedId;
+  }, [selectedId]);
 
   /* =======================================================
      LOAD CONVERSATIONS
@@ -948,83 +968,121 @@ function InboxShell() {
       | null = null;
 
     try {
-      socket =
-        connectSocket();
+      /*
+       * This creates/reuses ONE socket.
+       */
+      socket = connectSocket();
 
       console.log(
-        "Connecting frontend Socket.IO..."
+        "Frontend Socket.IO listener initialized"
       );
 
-      socket.on(
-        "whatsapp:new-message",
-        (payload: any) => {
-          console.log(
-            "========== NEW REAL-TIME MESSAGE =========="
+      /*
+       * IMPORTANT:
+       *
+       * Do NOT put selectedId in this effect's
+       * dependency array.
+       *
+       * selectedIdRef always contains the
+       * latest selected conversation.
+       */
+      const handleNewMessage = (
+        payload: any
+      ) => {
+        console.log(
+          "========== NEW REAL-TIME MESSAGE =========="
+        );
+
+        console.log(
+          "Socket payload:",
+          payload
+        );
+
+        console.log(
+          "============================================"
+        );
+
+        const incomingMessage =
+          payload?.message;
+
+        if (!incomingMessage) {
+          console.warn(
+            "Socket message received without message data"
           );
 
-          console.log(payload);
+          return;
+        }
 
-          console.log(
-            "============================================"
+        const conversationId =
+          incomingMessage.conversationId;
+
+        if (!conversationId) {
+          console.warn(
+            "Socket message does not contain conversationId"
           );
 
-          const incomingMessage =
-            payload?.message;
+          return;
+        }
 
-          const incomingConversation =
-            payload?.conversation;
+        /*
+         * Convert backend message into
+         * frontend Message format.
+         */
+        const message =
+          mapMessage(
+            incomingMessage
+          );
 
-          if (!incomingMessage) {
-            console.warn(
-              "Socket event has no message"
-            );
-
-            return;
-          }
-
-          const conversationId =
-            incomingMessage.conversationId ||
-            incomingConversation?._id;
-
-          if (!conversationId) {
-            console.warn(
-              "Socket message has no conversationId"
-            );
-
-            return;
-          }
-
-          const message =
-            mapMessage(
-              incomingMessage
-            );
-
-          setItems((current) => {
+        setItems(
+          (currentItems) => {
             const conversation =
-              current.find(
+              currentItems.find(
                 (item) =>
                   item.id ===
                   conversationId
               );
 
+            /*
+             * Conversation isn't currently
+             * loaded in the inbox.
+             *
+             * Do not create fake conversation.
+             */
             if (!conversation) {
-              return current;
+              console.warn(
+                "Conversation not found in current inbox:",
+                conversationId
+              );
+
+              return currentItems;
             }
 
+            /*
+             * Prevent duplicate messages.
+             */
             const alreadyExists =
               conversation.messages.some(
-                (item) =>
-                  item.id ===
+                (existingMessage) =>
+                  existingMessage.id ===
                   message.id
               );
 
             if (alreadyExists) {
-              return current;
+              console.log(
+                "Duplicate socket message ignored:",
+                message.id
+              );
+
+              return currentItems;
             }
 
+            /*
+             * Check which conversation is
+             * currently open.
+             */
             const isCurrentConversation =
-              conversationId ===
-              selectedId;
+              selectedIdRef.current ===
+              conversationId;
 
             const updatedConversation = {
               ...conversation,
@@ -1040,73 +1098,66 @@ function InboxShell() {
               timestamp:
                 message.time,
 
+              /*
+               * If current chat is open:
+               * unread = 0
+               *
+               * Otherwise:
+               * increment unread.
+               */
               unread:
                 isCurrentConversation
                   ? 0
-                  : conversation.unread + 1,
+                  : conversation.unread +
+                    1,
             };
 
             /*
-             * Move the conversation to
-             * the top when a new message
-             * arrives.
+             * Move conversation to top.
              */
-
             return [
               updatedConversation,
 
-              ...current.filter(
+              ...currentItems.filter(
                 (item) =>
                   item.id !==
                   conversationId
               ),
             ];
-          });
-        }
+          }
+        );
+      };
+
+      /*
+       * MUST match backend event name.
+       */
+      socket.on(
+        "new_message",
+        handleNewMessage
       );
 
-      socket.on(
-        "connect",
-        () => {
-          console.log(
-            "Frontend Socket.IO connected:",
-            socket?.id
-          );
-        }
-      );
+      /*
+       * Cleanup only the listener.
+       *
+       * DO NOT disconnect socket.
+       */
+      return () => {
+        console.log(
+          "Removing frontend Socket.IO listener"
+        );
 
-      socket.on(
-        "connect_error",
-        (error) => {
-          console.error(
-            "Frontend Socket.IO error:",
-            error.message
-          );
-        }
-      );
+        socket?.off(
+          "new_message",
+          handleNewMessage
+        );
+      };
     } catch (error) {
       console.error(
         "Socket initialization failed:",
         error
       );
     }
-
-    return () => {
-      if (socket) {
-        socket.off(
-          "whatsapp:new-message"
-        );
-
-        socket.off("connect");
-
-        socket.off(
-          "connect_error"
-        );
-      }
-
-      disconnectSocket();
-    };
-  }, [selectedId]);
+  }, []);
 
   const selected =
     items.find(
@@ -1123,6 +1174,11 @@ function InboxShell() {
     id: string
   ) => {
     setSelectedId(id);
+
+    /*
+     * Immediately update ref as well.
+     */
+    selectedIdRef.current = id;
 
     setSendError("");
 
@@ -1165,18 +1221,14 @@ function InboxShell() {
       setSendError("");
 
       /*
-       * POST:
+       * Backend API:
        *
+       * POST
        * /api/whatsapp/conversations/:id/messages
        *
-       * sendWhatsAppMessage() already
-       * sends:
-       *
-       * {
-       *   message: text
-       * }
+       * sendWhatsAppMessage() handles
+       * the request body.
        */
-
       const data =
         await sendWhatsAppMessage(
           selected.id,
@@ -1184,18 +1236,17 @@ function InboxShell() {
         );
 
       /*
-       * Your actual backend response:
+       * Backend response:
        *
        * {
        *   success: true,
-       *   message: "Message sent successfully",
+       *   message: "...",
        *   data: {
        *     whatsappMessageId: "...",
        *     message: {...}
        *   }
        * }
        */
-
       const backendMessage =
         data?.data?.message;
 
@@ -1328,6 +1379,7 @@ function InboxShell() {
           </div>
 
           <div>
+
             <p className="text-sm font-semibold tracking-tight">
               ReplyDesk
             </p>
@@ -1335,6 +1387,7 @@ function InboxShell() {
             <p className="hidden text-[11px] text-muted-foreground sm:block">
               WhatsApp Business inbox
             </p>
+
           </div>
 
         </div>
@@ -1362,7 +1415,6 @@ function InboxShell() {
           </div>
 
         </div>
-
       </header>
 
       {/* CONTENT */}
@@ -1407,7 +1459,6 @@ function InboxShell() {
         )}
 
       </div>
-
     </main>
   );
 }
