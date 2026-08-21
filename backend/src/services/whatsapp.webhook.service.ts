@@ -35,6 +35,24 @@ interface WhatsAppWebhook {
             body?: string;
           };
         }>;
+
+        statuses?: Array<{
+          id?: string;
+          status?: string;
+          timestamp?: string;
+          recipient_id?: string;
+          recipient_user_id?: string;
+
+          errors?: Array<{
+            code?: number;
+            title?: string;
+            message?: string;
+
+            error_data?: {
+              details?: string;
+            };
+          }>;
+        }>;
       };
     }>;
   }>;
@@ -83,6 +101,132 @@ export async function processWhatsAppWebhook(
       }
 
       const userId = config.userId;
+
+      /*
+       * =========================================================
+       * WHATSAPP MESSAGE STATUS
+       * =========================================================
+       *
+       * Meta sends delivery/read/failure updates
+       * through the "statuses" array.
+       *
+       * Example:
+       *
+       * statuses: [
+       *   {
+       *     id: "wamid....",
+       *     status: "delivered"
+       *   }
+       * ]
+       */
+      const statuses =
+        value.statuses ?? [];
+
+      for (const statusUpdate of statuses) {
+        if (
+          !statusUpdate.id ||
+          !statusUpdate.status
+        ) {
+          continue;
+        }
+
+        const whatsappMessageId =
+          statusUpdate.id;
+
+        const newStatus =
+          statusUpdate.status;
+
+        console.log(
+          `WhatsApp message status update: ${whatsappMessageId} -> ${newStatus}`
+        );
+
+        /**
+         * Find the existing message using
+         * the WhatsApp message ID.
+         */
+        const existingMessage =
+          await Message.findOne({
+            whatsappMessageId,
+            userId,
+          });
+
+        if (!existingMessage) {
+          console.warn(
+            `Message not found for WhatsApp status update: ${whatsappMessageId}`
+          );
+
+          continue;
+        }
+
+        /**
+         * Update message status.
+         */
+        existingMessage.status =
+          newStatus;
+
+        await existingMessage.save();
+
+        console.log(
+          `Message status updated: ${whatsappMessageId} -> ${newStatus}`
+        );
+
+        /**
+         * Send real-time status update
+         * to the logged-in frontend.
+         */
+        try {
+          const io = getSocketIO();
+
+          const roomName =
+            `user:${userId}`;
+
+          io.to(roomName).emit(
+            "message_status_updated",
+            {
+              messageId:
+                existingMessage._id,
+
+              whatsappMessageId,
+
+              conversationId:
+                existingMessage.conversationId,
+
+              status: newStatus,
+
+              timestamp:
+                statusUpdate.timestamp
+                  ? new Date(
+                      Number(
+                        statusUpdate.timestamp
+                      ) * 1000
+                    )
+                  : new Date(),
+
+              errors:
+                statusUpdate.errors ?? [],
+            }
+          );
+
+          console.log(
+            `Real-time status emitted to ${roomName}: ${whatsappMessageId} -> ${newStatus}`
+          );
+        } catch (socketError) {
+          /**
+           * Socket failure must NOT cause
+           * webhook processing to fail.
+           */
+          console.error(
+            "Socket.IO status emit error:",
+            socketError
+          );
+        }
+      }
+
+      /*
+       * =========================================================
+       * INCOMING WHATSAPP MESSAGES
+       * =========================================================
+       */
 
       const contacts =
         value.contacts ?? [];
@@ -245,6 +389,7 @@ export async function processWhatsAppWebhook(
             "new_message",
             {
               message: savedMessage,
+
               conversation: {
                 _id:
                   conversation._id,

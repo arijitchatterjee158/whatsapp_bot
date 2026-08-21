@@ -7,6 +7,7 @@ export type MessageStatus =
 
 export type Message = {
   id: string
+  whatsappMessageId?: string
   text: string
   time: string
   direction: 'incoming' | 'outgoing'
